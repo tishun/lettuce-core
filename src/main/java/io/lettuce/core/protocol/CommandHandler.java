@@ -49,6 +49,8 @@ import io.lettuce.core.internal.LettuceSets;
 import io.lettuce.core.metrics.CommandLatencyRecorder;
 import io.lettuce.core.output.CommandOutput;
 import io.lettuce.core.output.PushOutput;
+import io.lettuce.core.rebind.RebindCompleteEvent;
+import io.lettuce.core.rebind.RebindInitiatedEvent;
 import io.lettuce.core.resource.ClientResources;
 import io.lettuce.core.tracing.TraceContext;
 import io.lettuce.core.tracing.TraceContextProvider;
@@ -138,6 +140,8 @@ public class CommandHandler extends ChannelDuplexHandler implements HasQueuedCom
     private boolean pristine;
 
     private Tracing.Endpoint tracedEndpoint;
+
+    private boolean rebindInProgress = false;
 
     /**
      * Initialize a new instance that handles commands from the supplied queue.
@@ -265,11 +269,18 @@ public class CommandHandler extends ChannelDuplexHandler implements HasQueuedCom
      */
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+        endpoint.userEventTriggered(ctx, evt);
 
         if (evt == EnableAutoRead.INSTANCE) {
             channel.config().setAutoRead(true);
         } else if (evt instanceof Reset) {
             reset();
+        } else if (evt instanceof RebindInitiatedEvent) {
+            RebindInitiatedEvent rebindInitiatedEvent = (RebindInitiatedEvent) evt;
+            if (traceEnabled) {
+                logger.trace("{} Rebind initiated to {}", logPrefix(), rebindInitiatedEvent.getRemoteAddress());
+            }
+            this.rebindInProgress = true;
         }
 
         super.userEventTriggered(ctx, evt);
@@ -626,6 +637,11 @@ public class CommandHandler extends ChannelDuplexHandler implements HasQueuedCom
 
     protected void decode(ChannelHandlerContext ctx, ByteBuf buffer) throws InterruptedException {
 
+        if (traceEnabled && rebindInProgress){
+            logger.trace("{} Processing command while rebind is in progress, stack has {} more to process",
+                    logPrefix(), stack.size());
+        }
+
         if (pristine) {
 
             if (stack.isEmpty() && buffer.isReadable() && !isPushDecode(buffer)) {
@@ -709,6 +725,15 @@ public class CommandHandler extends ChannelDuplexHandler implements HasQueuedCom
                 }
                 afterDecode(ctx, command);
             }
+        }
+
+        if (rebindInProgress && stack.isEmpty()){
+            if(traceEnabled){
+                logger.trace("{} Rebind completed", logPrefix());
+            }
+
+            rebindInProgress = false;
+            ctx.fireUserEventTriggered(new RebindCompleteEvent());
         }
 
         decodeBufferPolicy.afterDecoding(buffer);

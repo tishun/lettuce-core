@@ -18,20 +18,12 @@
  * limitations under the License.
  */
 
-package io.lettuce.core.proactive;
+package io.lettuce.core.rebind;
+
+import io.lettuce.core.event.Event;
 
 import java.net.SocketAddress;
 
-public class ProactiveRebindEvent {
-
-    private final SocketAddress remoteAddress;
-
-    public ProactiveRebindEvent(SocketAddress remoteAddress) {
-        this.remoteAddress = remoteAddress;
-    }
-
-    public SocketAddress getRemoteAddress() {
-        return remoteAddress;
-    }
+public class RebindCompleteEvent implements Event {
 
 }

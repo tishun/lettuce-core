@@ -25,7 +25,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import io.lettuce.core.proactive.ProactiveRebindEvent;
+import io.lettuce.core.rebind.RebindInitiatedEvent;
 import reactor.core.publisher.Mono;
 import reactor.util.function.Tuple2;
 import io.lettuce.core.ClientOptions;
@@ -102,7 +102,7 @@ public class ConnectionWatchdog extends ChannelInboundHandlerAdapter {
 
     private volatile Timeout reconnectScheduleTimeout;
 
-    private SocketAddress rebindAddress;
+    private volatile SocketAddress rebindAddress;
 
     /**
      * Create a new watchdog that adds to new connections to the supplied {@link ChannelGroup} and establishes a new
@@ -218,10 +218,10 @@ public class ConnectionWatchdog extends ChannelInboundHandlerAdapter {
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-        if (evt instanceof ProactiveRebindEvent) {
-            ProactiveRebindEvent event = (ProactiveRebindEvent) evt;
-            logger.info("Proactive rebind to {}", event.getRemoteAddress());
+        if (evt instanceof RebindInitiatedEvent) {
+            RebindInitiatedEvent event = (RebindInitiatedEvent) evt;
             rebindAddress = event.getRemoteAddress();
+            eventBus.publish(event);
         }
 
         super.userEventTriggered(ctx, evt);
@@ -352,6 +352,7 @@ public class ConnectionWatchdog extends ChannelInboundHandlerAdapter {
             future.whenComplete((c, t) -> {
 
                 if (c != null && t == null) {
+                    rebindAddress = null; //what if there is a rebind in progress?
                     return;
                 }
 

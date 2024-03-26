@@ -8,8 +8,7 @@ import io.lettuce.core.api.push.PushListener;
 import io.lettuce.core.api.push.PushMessage;
 import io.lettuce.core.codec.StringCodec;
 import io.lettuce.core.event.EventBus;
-import io.lettuce.core.proactive.ProactiveWatchdogCommandHandler;
-import io.lettuce.core.protocol.CommandExpiryWriter;
+import io.lettuce.core.rebind.RebindHandler;
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection;
 import io.lettuce.core.pubsub.api.async.RedisPubSubAsyncCommands;
 import io.lettuce.core.resource.ClientResources;
@@ -19,16 +18,26 @@ import io.netty.channel.Channel;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
-public class LettuceProactiveDemo {
+public class LettuceRebindDemo {
 
-    public static final Logger logger = Logger.getLogger(LettuceProactiveDemo.class.getName());
+    public static final Logger logger = Logger.getLogger(LettuceRebindDemo.class.getName());
+
+    public static final String KEY = "rebind:" + UUID.randomUUID().getLeastSignificantBits();
 
     public static void main(String[] args) throws ExecutionException, InterruptedException {
-        ProactiveWatchdogCommandHandler<String, String> proactiveHandler = new ProactiveWatchdogCommandHandler<>();
+        RebindHandler<String, String> proactiveHandler = new RebindHandler<>();
 
         ClientResources resources = ClientResources.builder().nettyCustomizer(new NettyCustomizer() {
 
@@ -39,10 +48,13 @@ public class LettuceProactiveDemo {
 
         }).build();
 
-        TimeoutOptions timeoutOpts = TimeoutOptions.builder().timeoutCommands().fixedTimeout(Duration.ofMillis(1)).build();
+        TimeoutOptions timeoutOpts = TimeoutOptions.builder()
+                .timeoutCommands()
+                .fixedTimeout(Duration.ofSeconds(1))
+                // NEW! control that during timeouts we need to relax the timeouts
+                .proactiveTimeoutsRelaxing(Duration.ofSeconds(30))
+                .build();
         ClientOptions options = ClientOptions.builder().timeoutOptions(timeoutOpts).build();
-
-        CommandExpiryWriter.enableProactive = true;
 
         RedisClient redisClient = RedisClient.create(resources, RedisURI.Builder.redis("localhost", 6379).build());
         redisClient.setOptions(options);
@@ -66,8 +78,30 @@ public class LettuceProactiveDemo {
         // Used to initiate the proactive rebind by sending the following command
         // publish __rebind "type=rebind;from_ep=localhost:6379;to_ep=localhost:6479;until_s=10"
 
-        // NO LONGER NEEDED, HANDLER REGISTERS ITSELF
-        // redis.addListener(proactiveHandler);
+//        ExecutorService executorService = new ThreadPoolExecutor(
+//                5,                           // core pool size
+//                10,                                      // maximum pool size
+//                60, TimeUnit.SECONDS,                    // idle thread keep-alive time
+//                new ArrayBlockingQueue<>(20),    // work queue size
+//                new ThreadPoolExecutor.DiscardPolicy()); // rejection policy
+//
+//        Supplier<Runnable> supplier = () -> new DemoWorker(commands);
+//
+//        try {
+//            while (control.shouldContinue) {
+//                executorService.execute(new DemoWorker(commands));
+//                Thread.sleep(200);
+//            }
+//
+//            if(executorService.awaitTermination(5, TimeUnit.SECONDS)){
+//                logger.info("Executor service terminated");
+//            } else {
+//                logger.warning("Executor service did not terminate in the specified time");
+//            }
+//
+//        } finally {
+//            executorService.shutdownNow();
+//        }
 
         while (control.shouldContinue) {
             try {
@@ -82,6 +116,23 @@ public class LettuceProactiveDemo {
         redis.close();
         redisClient.shutdown();
     }
+    
+    static class DemoWorker implements Runnable {
+        private final RedisPubSubAsyncCommands<String, String> commands;
+
+        public DemoWorker(RedisPubSubAsyncCommands<String, String> commands) {
+            this.commands = commands;
+        }
+
+        @Override
+        public void run() {
+            try {
+                commands.incr(KEY).get();
+            } catch (InterruptedException | ExecutionException e) {
+                logger.severe("ExecutionException: " + e.getMessage());
+            }
+        }
+    }
 
     static class Control implements PushListener {
 
@@ -89,10 +140,12 @@ public class LettuceProactiveDemo {
 
         @Override
         public void onPushMessage(PushMessage message) {
-            List<String> content = message.getContent().stream().map(ez -> StringCodec.UTF8.decodeKey((ByteBuffer) ez))
+            List<String> content = message.getContent().stream()
+                    .filter(ez -> ez instanceof ByteBuffer)
+                    .map(ez -> StringCodec.UTF8.decodeKey((ByteBuffer) ez))
                     .collect(Collectors.toList());
 
-            if (content.stream().anyMatch(c -> c.equals("type=stop_demo"))) {
+            if (content.stream().anyMatch(c -> c.contains("type=stop_demo"))) {
                 logger.info("Control received message to stop the demo");
                 shouldContinue = false;
             }
