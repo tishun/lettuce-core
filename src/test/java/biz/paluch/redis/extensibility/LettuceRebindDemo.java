@@ -8,22 +8,16 @@ import io.lettuce.core.api.push.PushListener;
 import io.lettuce.core.api.push.PushMessage;
 import io.lettuce.core.codec.StringCodec;
 import io.lettuce.core.event.EventBus;
-import io.lettuce.core.rebind.RebindHandler;
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection;
 import io.lettuce.core.pubsub.api.async.RedisPubSubAsyncCommands;
-import io.lettuce.core.resource.ClientResources;
-import io.lettuce.core.resource.NettyCustomizer;
-import io.netty.channel.Channel;
 
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -37,16 +31,8 @@ public class LettuceRebindDemo {
     public static final String KEY = "rebind:" + UUID.randomUUID().getLeastSignificantBits();
 
     public static void main(String[] args) throws ExecutionException, InterruptedException {
-        RebindHandler<String, String> proactiveHandler = new RebindHandler<>();
 
-        ClientResources resources = ClientResources.builder().nettyCustomizer(new NettyCustomizer() {
-
-            @Override
-            public void afterChannelInitialized(Channel channel) {
-                channel.pipeline().addFirst(proactiveHandler);
-            }
-
-        }).build();
+        // NEW! No need for a custom handler
 
         TimeoutOptions timeoutOpts = TimeoutOptions.builder()
                 .timeoutCommands()
@@ -56,16 +42,16 @@ public class LettuceRebindDemo {
                 .build();
         ClientOptions options = ClientOptions.builder().timeoutOptions(timeoutOpts).build();
 
-        RedisClient redisClient = RedisClient.create(resources, RedisURI.Builder.redis("localhost", 6379).build());
+        RedisClient redisClient = RedisClient.create(RedisURI.Builder.redis("localhost", 6379).build());
         redisClient.setOptions(options);
 
         // Monitor connection events
         EventBus eventBus = redisClient.getResources().eventBus();
         eventBus.get().subscribe(e -> {
-            logger.info(">>> Connection event: " + e);
+            logger.info(">>> Event bus received: {} " + e);
         });
 
-        // Subscribe to __rebind channel
+        // Subscribe to __rebind channel (REMOVE ONCE WE START RECEIVING THESE WITHOUT SUBSCRIPTION)
         StatefulRedisPubSubConnection<String, String> redis = redisClient.connectPubSub();
         RedisPubSubAsyncCommands<String, String> commands = redis.async();
         commands.subscribe("__rebind").get();
@@ -78,40 +64,40 @@ public class LettuceRebindDemo {
         // Used to initiate the proactive rebind by sending the following command
         // publish __rebind "type=rebind;from_ep=localhost:6379;to_ep=localhost:6479;until_s=10"
 
-//        ExecutorService executorService = new ThreadPoolExecutor(
-//                5,                           // core pool size
-//                10,                                      // maximum pool size
-//                60, TimeUnit.SECONDS,                    // idle thread keep-alive time
-//                new ArrayBlockingQueue<>(20),    // work queue size
-//                new ThreadPoolExecutor.DiscardPolicy()); // rejection policy
-//
-//        Supplier<Runnable> supplier = () -> new DemoWorker(commands);
-//
-//        try {
-//            while (control.shouldContinue) {
-//                executorService.execute(new DemoWorker(commands));
-//                Thread.sleep(200);
-//            }
-//
-//            if(executorService.awaitTermination(5, TimeUnit.SECONDS)){
-//                logger.info("Executor service terminated");
-//            } else {
-//                logger.warning("Executor service did not terminate in the specified time");
-//            }
-//
-//        } finally {
-//            executorService.shutdownNow();
-//        }
+        ExecutorService executorService = new ThreadPoolExecutor(
+                5,                           // core pool size
+                10,                                      // maximum pool size
+                60, TimeUnit.SECONDS,                    // idle thread keep-alive time
+                new ArrayBlockingQueue<>(20),    // work queue size
+                new ThreadPoolExecutor.DiscardPolicy()); // rejection policy
 
-        while (control.shouldContinue) {
-            try {
-                logger.info("Sending PING");
-                logger.info(commands.ping().get());
-                Thread.sleep(2000);
-            } catch (InterruptedException e) {
-                logger.severe("InterruptedException: " + e.getMessage());
+        Supplier<Runnable> supplier = () -> new DemoWorker(commands);
+
+        try {
+            while (control.shouldContinue) {
+                executorService.execute(new DemoWorker(commands));
+                Thread.sleep(10);
             }
+
+            if(executorService.awaitTermination(5, TimeUnit.SECONDS)){
+                logger.info("Executor service terminated");
+            } else {
+                logger.warning("Executor service did not terminate in the specified time");
+            }
+
+        } finally {
+            executorService.shutdownNow();
         }
+
+//        while (control.shouldContinue) {
+//            try {
+//                logger.info("Sending PING");
+//                logger.info(commands.ping().get());
+//                Thread.sleep(2000);
+//            } catch (InterruptedException |ExecutionException e) {
+//                logger.severe("Exception: " + e.getMessage());
+//            }
+//        }
 
         redis.close();
         redisClient.shutdown();

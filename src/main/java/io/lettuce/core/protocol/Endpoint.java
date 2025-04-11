@@ -59,6 +59,4 @@ public interface Endpoint extends PushHandler {
      */
     String getId();
 
-    void userEventTriggered(ChannelHandlerContext ctx, Object evt);
-
 }

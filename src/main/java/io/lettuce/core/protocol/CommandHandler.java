@@ -20,11 +20,13 @@
 package io.lettuce.core.protocol;
 
 import static io.lettuce.core.ConnectionEvents.*;
+import static io.lettuce.core.protocol.ConnectionWatchdog.REBIND_ATTRIBUTE;
 
 import java.io.IOException;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.time.LocalTime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -49,8 +51,7 @@ import io.lettuce.core.internal.LettuceSets;
 import io.lettuce.core.metrics.CommandLatencyRecorder;
 import io.lettuce.core.output.CommandOutput;
 import io.lettuce.core.output.PushOutput;
-import io.lettuce.core.rebind.RebindCompleteEvent;
-import io.lettuce.core.rebind.RebindInitiatedEvent;
+import io.lettuce.core.rebind.RebindState;
 import io.lettuce.core.resource.ClientResources;
 import io.lettuce.core.tracing.TraceContext;
 import io.lettuce.core.tracing.TraceContextProvider;
@@ -140,8 +141,6 @@ public class CommandHandler extends ChannelDuplexHandler implements HasQueuedCom
     private boolean pristine;
 
     private Tracing.Endpoint tracedEndpoint;
-
-    private boolean rebindInProgress = false;
 
     /**
      * Initialize a new instance that handles commands from the supplied queue.
@@ -269,18 +268,11 @@ public class CommandHandler extends ChannelDuplexHandler implements HasQueuedCom
      */
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-        endpoint.userEventTriggered(ctx, evt);
 
         if (evt == EnableAutoRead.INSTANCE) {
             channel.config().setAutoRead(true);
         } else if (evt instanceof Reset) {
             reset();
-        } else if (evt instanceof RebindInitiatedEvent) {
-            RebindInitiatedEvent rebindInitiatedEvent = (RebindInitiatedEvent) evt;
-            if (traceEnabled) {
-                logger.trace("{} Rebind initiated to {}", logPrefix(), rebindInitiatedEvent.getRemoteAddress());
-            }
-            this.rebindInProgress = true;
         }
 
         super.userEventTriggered(ctx, evt);
@@ -636,9 +628,11 @@ public class CommandHandler extends ChannelDuplexHandler implements HasQueuedCom
     }
 
     protected void decode(ChannelHandlerContext ctx, ByteBuf buffer) throws InterruptedException {
-
-        if (traceEnabled && rebindInProgress){
-            logger.trace("{} Processing command while rebind is in progress, stack has {} more to process",
+        final boolean rebindInProgress = ctx.channel().hasAttr(REBIND_ATTRIBUTE)
+                && ctx.channel().attr(REBIND_ATTRIBUTE).get() != null
+                && ctx.channel().attr(REBIND_ATTRIBUTE).get().equals(RebindState.STARTED);
+        if (debugEnabled && rebindInProgress) {
+            logger.debug("{} Processing command while rebind is in progress, stack has {} more to process",
                     logPrefix(), stack.size());
         }
 
@@ -728,12 +722,8 @@ public class CommandHandler extends ChannelDuplexHandler implements HasQueuedCom
         }
 
         if (rebindInProgress && stack.isEmpty()){
-            if(traceEnabled){
-                logger.trace("{} Rebind completed", logPrefix());
-            }
-
-            rebindInProgress = false;
-            ctx.fireUserEventTriggered(new RebindCompleteEvent());
+            logger.debug("{} Rebind completed at {}", logPrefix(), LocalTime.now());
+            ctx.channel().attr(REBIND_ATTRIBUTE).set(RebindState.COMPLETED);
         }
 
         decodeBufferPolicy.afterDecoding(buffer);
