@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatcher;
-import reactor.core.scheduler.Schedulers;
+
 import reactor.test.StepVerifier;
 
 import java.time.Duration;
@@ -48,7 +48,7 @@ public class RedisAuthenticationHandlerUnitTests {
 
     @BeforeEach
     void setUp() {
-        eventBus = new DefaultEventBus(Schedulers.immediate());
+        eventBus = new DefaultEventBus();
         writer = mock(RedisChannelWriter.class);
         connection = mock(StatefulRedisConnectionImpl.class);
         resources = mock(ClientResources.class);
